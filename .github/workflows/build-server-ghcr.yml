@@ -32,6 +32,65 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Audit OSS workspace/Dockerfile consistency
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob, json, re, sys
+          from pathlib import Path
+
+          root = json.loads(Path('package.json').read_text())
+          actual = sorted({
+              path
+              for pattern in root.get('workspaces', [])
+              if not pattern.startswith('!')
+              for path in glob.glob(pattern)
+              if Path(path, 'package.json').exists()
+          })
+
+          lock = Path('bun.lock').read_text()
+          lock_paths = sorted(set(re.findall(r'^    "((?:packages|apps)/[^"]+)": \{\n      "name":', lock, re.M)))
+
+          dockerfile = Path('Dockerfile.server').read_text()
+          docker_paths = sorted({
+              str(Path(match).parent)
+              for match in re.findall(r'^COPY ((?:packages|apps)/[^/]+/package\.json) ', dockerfile, re.M)
+          })
+
+          patch = Path('patches/dockerfile-server-oss.patch').read_text()
+          patch_removed = sorted({
+              str(Path(match).parent)
+              for match in re.findall(r'^-COPY ((?:packages|apps)/[^/]+/package\.json)', patch, re.M)
+          })
+          patch_placeholders = sorted(set(re.findall(r'(?:mkdir -p| )((?:packages|apps)/[a-zA-Z0-9_.-]+)', patch)))
+
+          lock_missing = sorted(set(lock_paths) - set(actual))
+          docker_missing = sorted(path for path in docker_paths if not Path(path, 'package.json').exists())
+          actual_not_copied = sorted(set(actual) - set(docker_paths))
+
+          errors = []
+          if actual_not_copied:
+              errors.append(f'actual workspaces missing Dockerfile manifest COPY: {actual_not_copied}')
+          if sorted(lock_missing) != sorted(patch_placeholders):
+              errors.append(f'lockfile missing-on-disk workspaces are not exactly patch placeholders: missing={lock_missing}, placeholders={patch_placeholders}')
+          if sorted(docker_missing) != sorted(patch_removed):
+              errors.append(f'Dockerfile missing-on-disk COPY entries are not exactly patch removals: missing={docker_missing}, removed={patch_removed}')
+          if sorted(lock_missing) != sorted(docker_missing):
+              errors.append(f'lock missing dirs and Dockerfile missing dirs differ: lock={lock_missing}, docker={docker_missing}')
+
+          print('actual workspaces:', actual)
+          print('lock missing-on-disk workspaces:', lock_missing)
+          print('Dockerfile missing-on-disk COPY dirs:', docker_missing)
+          print('patch placeholder dirs:', patch_placeholders)
+          print('patch removed COPY dirs:', patch_removed)
+
+          if errors:
+              print('\nAudit failed:', file=sys.stderr)
+              for error in errors:
+                  print(f'- {error}', file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: Apply OSS Dockerfile patch
         shell: bash
         run: |
