@@ -62,7 +62,8 @@ jobs:
               str(Path(match).parent)
               for match in re.findall(r'^-COPY ((?:packages|apps)/[^/]+/package\.json)', patch, re.M)
           })
-          patch_placeholders = sorted(set(re.findall(r'(?:mkdir -p| )((?:packages|apps)/[a-zA-Z0-9_.-]+)', patch)))
+          mkdir_match = re.search(r'^\+RUN mkdir -p (.*?) && \\', patch, re.M)
+          patch_placeholders = sorted(re.findall(r'(?:packages|apps)/[a-zA-Z0-9_.-]+', mkdir_match.group(1) if mkdir_match else ''))
 
           lock_missing = sorted(set(lock_paths) - set(actual))
           docker_missing = sorted(path for path in docker_paths if not Path(path, 'package.json').exists())
